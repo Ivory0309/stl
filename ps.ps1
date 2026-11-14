@@ -17,8 +17,16 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 if (-not $isAdmin) {
     $self = $PSCommandPath
     if (-not $self) { $self = 'C:\Users\Public\p.ps1' }
-    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoExit','-ep','bypass','-File',$self) -Verb RunAs
-    exit
+    for ($k = 1; $k -le 3; $k++) {
+        try {
+            Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoExit','-ep','bypass','-File',$self) -Verb RunAs -ErrorAction Stop
+            exit
+        } catch {
+            Write-Host "!! UAC отклонён (попытка $k)" -ForegroundColor Yellow
+            Start-Sleep 2
+        }
+    }
+    Write-Host '!! права не получены, продолжаю без администратора' -ForegroundColor Yellow
 }
 
 $log = 'C:\Users\Public\pslog.txt'
